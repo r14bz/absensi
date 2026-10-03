@@ -26,7 +26,7 @@ function describeCameraError(e: unknown): string {
       return "Kamera tidak ditemukan di perangkat ini.";
     case "NotReadableError":
     case "AbortError":
-      return "Kamera sedang dipakai aplikasi lain. Tutup aplikasi tersebut lalu coba lagi.";
+      return "Kamera tidak bisa dibuka (mungkin sedang dipakai aplikasi lain atau gagal dimulai). Tutup aplikasi kamera lain, lalu tekan Aktifkan Kamera. Jika masih gagal, coba ganti ke kamera belakang atau mulai ulang browser.";
     default:
       return e instanceof Error && e.message ? e.message : "Gagal mengakses kamera.";
   }
@@ -115,20 +115,34 @@ export function useGpsCamera() {
     setIsStarting(true);
     setCameraError(null);
     try {
-      let s: MediaStream;
-      try {
-        s = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false,
-        });
-      } catch (first) {
-        // Constraint terlalu ketat di sebagian HP lama: ulangi tanpa constraint.
-        if (first instanceof DOMException && first.name === "OverconstrainedError") {
-          s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        } else {
-          throw first;
+      // Coba beberapa constraint dari yang paling spesifik ke yang paling longgar.
+      // Sebagian HP (mis. Xiaomi/MIUI) menolak kamera depan dengan resolusi
+      // ideal 1280x720 lewat NotReadableError, padahal kameranya tidak dipakai
+      // aplikasi lain. Karena itu constraint dilonggarkan bertahap.
+      const attempts: MediaStreamConstraints[] = [
+        { video: { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+        { video: { facingMode: { ideal: facingMode } }, audio: false },
+        { video: true, audio: false },
+      ];
+      let s: MediaStream | null = null;
+      let lastError: unknown = null;
+      for (let i = 0; i < attempts.length; i++) {
+        if (gen !== genRef.current) return; // dibatalkan oleh stop()/start() baru
+        try {
+          s = await navigator.mediaDevices.getUserMedia(attempts[i]);
+          break;
+        } catch (err) {
+          lastError = err;
+          const name = err instanceof DOMException ? err.name : "";
+          // Izin ditolak / konteks tidak aman: mengulang tidak akan membantu.
+          if (name === "NotAllowedError" || name === "SecurityError") throw err;
+          // Beri waktu agar kamera yang baru ditutup benar-benar dilepas oleh sistem.
+          if (name === "NotReadableError" || name === "AbortError") {
+            await new Promise((r) => setTimeout(r, 400));
+          }
         }
       }
+      if (!s) throw lastError ?? new Error("Gagal mengakses kamera.");
       if (gen !== genRef.current) {
         s.getTracks().forEach((t) => t.stop()); // dibatalkan saat menunggu izin
         return;
