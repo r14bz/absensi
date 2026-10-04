@@ -8,7 +8,11 @@ import {
   type GpsFix,
   type PlaceInfo,
 } from "./geo";
+import { renderMapCanvas } from "./staticMap";
 import { formatWeatherLine, type WeatherInfo } from "./weather";
+
+/** "lengkap" = stempel teks saja; "peta" = stempel teks + peta kecil di kanan. */
+export type StampTemplate = "lengkap" | "peta";
 
 /** Sisi terpanjang foto hasil (px). Cukup tajam untuk stempel, tetap ringan di jaringan seluler. */
 const MAX_SIDE = 1280;
@@ -52,6 +56,16 @@ const SANS = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 const MONO = "ui-monospace, Menlo, Consolas, monospace";
 const TONE_COLOR = { good: "#4ade80", fair: "#fbbf24", poor: "#f87171" } as const;
 
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number): string[] {
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
@@ -85,11 +99,13 @@ export interface StampInput {
   place: PlaceInfo | null;
   weather: WeatherInfo | null;
   capturedAt: Date;
+  /** Default "lengkap". */
+  template?: StampTemplate;
 }
 
 /** Ambil frame video, tempelkan stempel GPS (lokasi, koordinat, waktu, cuaca, akurasi), kembalikan JPEG. */
 export async function renderStampedPhoto(input: StampInput): Promise<Blob> {
-  const { video, mirrored, fix, place, weather, capturedAt } = input;
+  const { video, mirrored, fix, place, weather, capturedAt, template = "lengkap" } = input;
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) throw new Error("Kamera belum menampilkan gambar.");
@@ -120,8 +136,14 @@ export async function renderStampedPhoto(input: StampInput): Promise<Blob> {
   const margin = 28 * u;
   const barW = Math.max(4, 5 * u);
   const contentX = margin + barW + 18 * u;
-  const maxTextW = cw - contentX - margin;
   const padY = 16 * u;
+
+  // Peta kecil (template "peta"). Bila tile gagal dimuat, peta dilewati dan teks memakai lebar penuh.
+  const mapSize = Math.round(150 * u);
+  const mapGap = 16 * u;
+  const mapCanvas =
+    template === "peta" ? await renderMapCanvas(fix.latitude, fix.longitude, fix.accuracy, mapSize) : null;
+  const maxTextW = cw - contentX - margin - (mapCanvas ? mapSize + mapGap : 0);
 
   const tone = accuracyTone(fix.accuracy);
   const alt = formatAltitude(fix.altitude);
@@ -156,7 +178,7 @@ export async function renderStampedPhoto(input: StampInput): Promise<Blob> {
   });
   const lineH = (row: Row) => row.size * 1.35;
   const contentH = laidOut.reduce((sum, { row, lines }) => sum + lines.length * lineH(row), 0);
-  const totalH = contentH + padY * 2;
+  const totalH = Math.max(contentH, mapCanvas ? mapSize : 0) + padY * 2;
   const top = ch - margin * 0.6 - totalH;
 
   // 3) Gradasi gelap lembut di bawah agar teks terbaca
@@ -170,6 +192,24 @@ export async function renderStampedPhoto(input: StampInput): Promise<Blob> {
   // 4) Bar aksen + teks
   ctx.fillStyle = "#38bdf8";
   ctx.fillRect(margin, top + padY * 0.5, barW, totalH - padY);
+
+  // 4b) Peta kecil di kanan blok stempel
+  if (mapCanvas) {
+    const mx = cw - margin - mapSize;
+    const my = top + (totalH - mapSize) / 2;
+    const radius = 14 * u;
+    ctx.save();
+    roundRectPath(ctx, mx, my, mapSize, mapSize, radius);
+    ctx.clip();
+    ctx.drawImage(mapCanvas, mx, my, mapSize, mapSize);
+    ctx.restore();
+    ctx.save();
+    roundRectPath(ctx, mx, my, mapSize, mapSize, radius);
+    ctx.lineWidth = Math.max(2, 3 * u);
+    ctx.strokeStyle = "rgba(255,255,255,0.92)";
+    ctx.stroke();
+    ctx.restore();
+  }
 
   ctx.textBaseline = "top";
   ctx.shadowColor = "rgba(0,0,0,0.95)";

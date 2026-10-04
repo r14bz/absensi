@@ -12,10 +12,11 @@ import {
   type PlaceInfo,
 } from "@/lib/gps-stamp/geo";
 import { playShutter } from "@/lib/gps-stamp/sound";
-import { formatStampTime } from "@/lib/gps-stamp/stampRenderer";
+import { formatStampTime, type StampTemplate } from "@/lib/gps-stamp/stampRenderer";
 import { formatWeatherLine, type WeatherInfo } from "@/lib/gps-stamp/weather";
 import { uploadSelfieClient } from "@/lib/storage/selfie-client";
 import { getBrowserClient } from "@/lib/supabase/client";
+import { MapThumb } from "./MapThumb";
 
 interface SelfieCaptureProps {
   onCapture: (data: { photoPath: string; latitude: number; longitude: number }) => void;
@@ -39,6 +40,11 @@ const ICON_CLOSE = "M6 18L18 6M6 6l12 12";
 const ICON_FLIP =
   "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15";
 const ICON_BOLT = "M13 10V3L4 14h7v7l9-11h-7z";
+const ICON_MAP =
+  "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7";
+
+const TEMPLATE_KEY = "gps_stamp_template";
+const TEMPLATE_LABEL: Record<StampTemplate, string> = { lengkap: "Lengkap", peta: "Lengkap + Peta" };
 const ICON_SPEAKER =
   "M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z";
 const ICON_MUTED =
@@ -55,10 +61,12 @@ const LiveStamp = memo(function LiveStamp({
   fix,
   place,
   weather,
+  template,
 }: {
   fix: GpsFix | null;
   place: PlaceInfo | null;
   weather: WeatherInfo | null;
+  template: StampTemplate;
 }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -71,7 +79,8 @@ const LiveStamp = memo(function LiveStamp({
 
   return (
     <div className="pointer-events-none absolute inset-x-2 bottom-2 z-10">
-      <div className="rounded-2xl border-l-4 border-sky-400 bg-gradient-to-t from-black/85 via-black/55 to-transparent p-3.5 text-white shadow-2xl">
+      <div className="flex items-center gap-3 rounded-2xl border-l-4 border-sky-400 bg-gradient-to-t from-black/85 via-black/55 to-transparent p-3.5 text-white shadow-2xl">
+        <div className="min-w-0 flex-1">
         <p className="line-clamp-1 text-sm font-extrabold uppercase tracking-wide drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]">
           📍 {place?.city ? `${place.city}${place.country ? `, ${place.country}` : ""}` : fix ? "Lokasi GPS" : "Menentukan lokasi…"}
         </p>
@@ -98,6 +107,10 @@ const LiveStamp = memo(function LiveStamp({
             🎯 AKURASI GPS: {formatAccuracy(fix.accuracy)} ({accuracyLabel(fix.accuracy)}){alt ? ` · ⛰️ ${alt}` : ""}
           </p>
         )}
+        </div>
+        {template === "peta" && fix && (
+          <MapThumb latitude={fix.latitude} longitude={fix.longitude} accuracy={fix.accuracy} />
+        )}
       </div>
     </div>
   );
@@ -113,6 +126,27 @@ export default function SelfieCapture({ onCapture, onCancel, method, isLoading }
   const [uploading, setUploading] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [template, setTemplate] = useState<StampTemplate>("peta");
+
+  // Pilihan template diingat di perangkat ini.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(TEMPLATE_KEY);
+      if (saved === "lengkap" || saved === "peta") setTemplate(saved);
+    } catch {
+      /* penyimpanan tidak tersedia: pakai default */
+    }
+  }, []);
+
+  const toggleTemplate = useCallback(() => {
+    const next: StampTemplate = template === "peta" ? "lengkap" : "peta";
+    setTemplate(next);
+    try {
+      localStorage.setItem(TEMPLATE_KEY, next);
+    } catch {
+      /* abaikan */
+    }
+  }, [template]);
 
   // Bebaskan object URL pratinjau saat diganti / komponen dilepas.
   const urlRef = useRef<string | null>(null);
@@ -140,7 +174,7 @@ export default function SelfieCapture({ onCapture, onCancel, method, isLoading }
     if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(50);
 
     try {
-      const result = await capture();
+      const result = await capture(template);
       if (!result) throw new Error("Gagal menangkap foto. Pastikan kamera sudah menampilkan gambar.");
       setPhoto({ blob: result.blob, url: URL.createObjectURL(result.blob), fix: result.fix });
       stopCamera(); // hemat baterai & matikan lampu kamera selama pratinjau
@@ -149,7 +183,7 @@ export default function SelfieCapture({ onCapture, onCancel, method, isLoading }
     } finally {
       setCapturing(false);
     }
-  }, [capturing, cam.fix, soundOn, capture, stopCamera]);
+  }, [capturing, cam.fix, soundOn, capture, stopCamera, template]);
 
   const handleRetake = useCallback(() => {
     if (photo) URL.revokeObjectURL(photo.url);
@@ -226,6 +260,18 @@ export default function SelfieCapture({ onCapture, onCancel, method, isLoading }
             </button>
           )}
           {!photo && (
+            <button
+              type="button"
+              onClick={toggleTemplate}
+              className={`${ROUND_BTN} ${template === "peta" ? "!border-sky-300 !bg-sky-400 !text-black" : ""}`}
+              aria-label={`Template stempel: ${TEMPLATE_LABEL[template]}. Ketuk untuk mengganti`}
+              title={`Template: ${TEMPLATE_LABEL[template]}`}
+              aria-pressed={template === "peta"}
+            >
+              <Icon d={ICON_MAP} />
+            </button>
+          )}
+          {!photo && (
             <button type="button" onClick={() => setSoundOn((v) => !v)} className={ROUND_BTN} aria-label="Suara rana" aria-pressed={soundOn}>
               <Icon d={soundOn ? ICON_SPEAKER : ICON_MUTED} />
             </button>
@@ -279,7 +325,7 @@ export default function SelfieCapture({ onCapture, onCancel, method, isLoading }
           </div>
         )}
 
-        {!photo && <LiveStamp fix={cam.fix} place={cam.place} weather={cam.weather} />}
+        {!photo && <LiveStamp fix={cam.fix} place={cam.place} weather={cam.weather} template={template} />}
 
         {photo && (
           // eslint-disable-next-line @next/next/no-img-element

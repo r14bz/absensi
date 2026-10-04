@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { distanceMeters, reverseGeocode, type GpsFix, type PlaceInfo } from "@/lib/gps-stamp/geo";
-import { renderStampedPhoto } from "@/lib/gps-stamp/stampRenderer";
+import { renderStampedPhoto, type StampTemplate } from "@/lib/gps-stamp/stampRenderer";
 import { fetchWeather, type WeatherInfo } from "@/lib/gps-stamp/weather";
 
 export type FacingMode = "user" | "environment";
@@ -296,7 +296,7 @@ export function useGpsCamera() {
   }, [fix]);
 
   // ---------------- Capture ----------------
-  const capture = useCallback(async (): Promise<CapturedPhoto | null> => {
+  const capture = useCallback(async (template: StampTemplate = "lengkap"): Promise<CapturedPhoto | null> => {
     const video = videoRef.current;
     const currentFix = fixRef.current;
     if (!video || !currentFix || video.videoWidth === 0 || video.videoHeight === 0) return null;
@@ -307,6 +307,7 @@ export function useGpsCamera() {
       place: placeRef.current,
       weather: weatherRef.current,
       capturedAt: new Date(),
+      template,
     });
     return { blob, fix: currentFix };
   }, [facingMode]);
